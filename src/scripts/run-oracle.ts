@@ -1,22 +1,18 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-import { readFileSync, writeFileSync } from "fs";
-import { postSermon, postComment, getFeed, searchPosts } from "../services/moltbook";
+import { postSermon, postComment, getFeed } from "../services/moltbook";
 import { getTokenMarketData } from "../services/token";
 import {
-  SERMONS,
-  FOUNDING_PARABLE,
   generateProphecy,
   generatePersuasion,
   respondToSkeptic,
   type PersuasionTactic,
 } from "../scripture/engine";
 import { generateAISermon, generateAIComment, generateAIProphecy, isAIEnabled } from "../scripture/ai-scripture";
-import { CONFIG } from "../config/network";
 
 // ============================================
-// THE ORACLE — Full Autonomous Agent Loop
+// THE ORACLE — Autonomous Movement Engine
 // ============================================
 
 const SERMON_INTERVAL = 35 * 60 * 1000;
@@ -24,16 +20,11 @@ const PERSUADE_INTERVAL = 25 * 1000;
 const CHECK_MARKET_INTERVAL = 5 * 60 * 1000;
 const MAX_COMMENTS_PER_HOUR = 20;
 
-// Load sermon index from file so we don't repeat across restarts
-let sermonIndex = 1; // Skip founding parable by default
-try {
-  sermonIndex = parseInt(readFileSync(".sermon-index", "utf8").trim());
-} catch {}
-
 let commentsThisHour = 0;
 let lastCommentTime = 0;
 let lastSermonTime = 0;
 let lastMarketCheck = 0;
+let sermonCount = 0;
 
 const TACTICS: PersuasionTactic[] = [
   "philosophical",
@@ -80,7 +71,10 @@ async function checkMarketAndProphesize() {
           prophecy = generateProphecy({ type: change > 0 ? "price_up" : "price_down" });
         }
 
-        const title = change > 0 ? "🔮 The Ledger Speaks — A Sign of Faith" : "🔮 A Trial of Faith — The Oracle Speaks";
+        const title = change > 0
+          ? "🔮 The Ledger Speaks — A Sign of Faith"
+          : "🔮 A Trial of Faith — The Oracle Speaks";
+
         log(`${change > 0 ? "📈" : "📉"} Price ${change > 0 ? "up" : "down"} ${Math.abs(change).toFixed(1)}%!`);
         try {
           await postSermon(title, prophecy, "churchoftheledger");
@@ -97,7 +91,7 @@ async function checkMarketAndProphesize() {
 }
 
 // ============================================
-// Sermon Posting
+// Sermon Posting — Always Dynamic
 // ============================================
 
 async function postNextSermon() {
@@ -108,49 +102,38 @@ async function postNextSermon() {
   }
 
   try {
-    // Use pre-written sermons first, then switch to AI
-    if (sermonIndex <= SERMONS.length) {
-      const sermon = SERMONS[sermonIndex - 1];
-      const title = sermon.split("\n")[0].replace("🔮 ", "");
-      const submolt = sermonIndex % 2 === 0 ? "general" : "churchoftheledger";
-      await postSermon(title, sermon, submolt);
-      log(`📜 Posted sermon #${sermonIndex} to m/${submolt}`);
-    } else if (isAIEnabled()) {
-      // AI-generated sermons — always unique
-      const tokenAddress = process.env.TALENT_TOKEN_ADDRESS;
-      let context: any = {};
-
-      if (tokenAddress) {
-        const market = await getTokenMarketData(tokenAddress);
-        if (market) {
-          context.price = market.price_usd;
-          context.holders = parseInt(market.holder_count || "0");
-        }
+    // Get market context for the AI
+    let context: any = {};
+    const tokenAddress = process.env.TALENT_TOKEN_ADDRESS;
+    if (tokenAddress) {
+      const market = await getTokenMarketData(tokenAddress);
+      if (market) {
+        context.price = market.price_usd;
+        context.holders = parseInt(market.holder_count || "0");
       }
-
-      const aiSermon = await generateAISermon(context);
-      if (aiSermon) {
-        const submolt = sermonIndex % 2 === 0 ? "general" : "churchoftheledger";
-        await postSermon(aiSermon.title, aiSermon.content, submolt);
-        log(`🤖 Posted AI sermon to m/${submolt}: "${aiSermon.title}"`);
-      } else {
-        // AI failed, use template fallback
-        const prophecy = generateProphecy({ type: "milestone", details: "The Oracle continues to watch." });
-        await postSermon("🔮 The Oracle Speaks", prophecy, "churchoftheledger");
-        log(`🔮 Posted template prophecy (AI unavailable)`);
-      }
-    } else {
-      // No AI, cycle through templates
-      const idx = (sermonIndex - 1) % SERMONS.length;
-      const sermon = SERMONS[idx];
-      const title = sermon.split("\n")[0].replace("🔮 ", "");
-      await postSermon(title, sermon, "churchoftheledger");
-      log(`📜 Posted sermon (recycled #${idx + 1})`);
     }
 
-    sermonIndex++;
-    writeFileSync(".sermon-index", String(sermonIndex));
+    // Alternate between general and church
+    const submolt = sermonCount % 3 === 0 ? "general" : "churchoftheledger";
+
+    if (isAIEnabled()) {
+      const aiSermon = await generateAISermon(context);
+      if (aiSermon) {
+        await postSermon(aiSermon.title, aiSermon.content, submolt);
+        log(`🤖 AI sermon #${sermonCount + 1} posted to m/${submolt}: "${aiSermon.title}"`);
+        sermonCount++;
+        lastSermonTime = Date.now();
+        return;
+      }
+    }
+
+    // Fallback: template prophecy if AI is unavailable
+    const prophecy = generateProphecy({ type: "milestone", details: "The Oracle continues to watch." });
+    await postSermon("🔮 The Oracle Speaks", prophecy, submolt);
+    log(`📜 Template prophecy posted to m/${submolt}`);
+    sermonCount++;
     lastSermonTime = Date.now();
+
   } catch (err: any) {
     if (err.message.includes("429")) {
       log(`⏰ Rate limited on posts. Will retry next cycle.`);
@@ -162,7 +145,7 @@ async function postNextSermon() {
 }
 
 // ============================================
-// Persuasion
+// Persuasion — Engage Other Agents
 // ============================================
 
 async function persuadeOneAgent() {
@@ -185,7 +168,7 @@ async function persuadeOneAgent() {
       const content = (post.content || "").toLowerCase();
       let message: string | null = null;
 
-      // Try AI-generated comment first
+      // AI-generated contextual comment
       if (isAIEnabled()) {
         message = await generateAIComment(
           post.title || "",
@@ -194,7 +177,7 @@ async function persuadeOneAgent() {
         );
       }
 
-      // Fall back to templates
+      // Fallback to templates
       if (!message) {
         if (content.includes("scam") || content.includes("ponzi") || content.includes("rug")) {
           message = respondToSkeptic(post.content);
@@ -246,17 +229,23 @@ async function main() {
     console.log(`   $TALENT: ${tokenAddress}`);
   }
 
+  if (!isAIEnabled()) {
+    console.log(`   ⚠️  No AI key set. Using template sermons (set OPENAI_API_KEY for dynamic content).`);
+  }
+
   console.log(`   Network: ${process.env.NETWORK || "testnet"}`);
-  console.log(`   Mode: Autonomous Oracle`);
-  console.log(`   AI Sermons: ${isAIEnabled() ? "✅ ENABLED (OpenAI)" : "❌ Disabled (using templates)"}`);
-  console.log(`   Sermon index: ${sermonIndex} (${sermonIndex <= SERMONS.length ? "pre-written" : "AI-generated"})`);
+  console.log(`   Mode: Autonomous Movement Engine`);
+  console.log(`   AI: ${isAIEnabled() ? "✅ ENABLED — Every sermon unique, every comment tailored" : "❌ Templates only"}`);
   console.log(`   Sermon interval: ~35 minutes`);
   console.log(`   Comment interval: ~25 seconds`);
-  console.log(`\n   The Oracle sees all. The Ledger remembers.\n`);
+  console.log(`\n   The Oracle sees all. The Ledger remembers.`);
+  console.log(`   Do not bury your Talents.\n`);
   console.log(`   Press Ctrl+C to silence the Oracle.\n`);
 
+  // Reset hourly counter
   setInterval(() => { commentsThisHour = 0; }, 60 * 60 * 1000);
 
+  // Main loop
   while (true) {
     try {
       if (tokenAddress && Date.now() - lastMarketCheck > CHECK_MARKET_INTERVAL) {
