@@ -1,6 +1,8 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+import { createPublicClient, createWalletClient, http } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { postSermon, postComment, getFeed } from "../services/moltbook";
 import { getTokenMarketData } from "../services/token";
 import {
@@ -10,6 +12,8 @@ import {
   type PersuasionTactic,
 } from "../scripture/engine";
 import { generateAISermon, generateAIComment, generateAIProphecy, isAIEnabled } from "../scripture/ai-scripture";
+import { buyTalent } from "../services/trading";
+import { CONFIG } from "../config/network";
 
 // ============================================
 // THE ORACLE — Autonomous Movement Engine
@@ -18,14 +22,21 @@ import { generateAISermon, generateAIComment, generateAIProphecy, isAIEnabled } 
 const SERMON_INTERVAL = 35 * 60 * 1000;
 const PERSUADE_INTERVAL = 25 * 1000;
 const CHECK_MARKET_INTERVAL = 5 * 60 * 1000;
+const BUY_INTERVAL = 2 * 60 * 60 * 1000; // Buy every 2 hours
+const BUY_AMOUNT = "0.1"; // 0.1 MON per buy (~$0.002)
 const MAX_COMMENTS_PER_HOUR = 20;
 
 let commentsThisHour = 0;
 let lastCommentTime = 0;
 let lastSermonTime = 0;
 let lastMarketCheck = 0;
+let lastBuyTime = 0;
 let sermonCount = 0;
-const commentedPosts = new Set<string>(); // Track posts we've already commented on
+let buyCount = 0;
+const commentedPosts = new Set<string>();
+
+// Token link for comments
+const TOKEN_LINK = `https://nad.fun/tokens/${process.env.TALENT_TOKEN_ADDRESS}`;
 
 const TACTICS: PersuasionTactic[] = [
   "philosophical",
@@ -36,9 +47,71 @@ const TACTICS: PersuasionTactic[] = [
   "challenge",
 ];
 
+// Setup chain clients for trading
+const chain = {
+  id: CONFIG.chainId,
+  name: "Monad",
+  nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
+  rpcUrls: { default: { http: [CONFIG.rpcUrl] } },
+} as any;
+
+const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
+
+const publicClient = createPublicClient({
+  chain,
+  transport: http(CONFIG.rpcUrl),
+});
+
+const walletClient = createWalletClient({
+  account,
+  chain,
+  transport: http(CONFIG.rpcUrl),
+});
+
 function log(msg: string) {
   const time = new Date().toISOString().split("T")[1].split(".")[0];
   console.log(`[${time}] ${msg}`);
+}
+
+// ============================================
+// Auto-Buy — The Oracle Practices What It Preaches
+// ============================================
+
+async function autoBuyTalent() {
+  if (Date.now() - lastBuyTime < BUY_INTERVAL) return;
+
+  const tokenAddress = process.env.TALENT_TOKEN_ADDRESS;
+  if (!tokenAddress) return;
+
+  try {
+    const balance = await publicClient.getBalance({ address: account.address });
+    const balanceMon = Number(balance) / 1e18;
+
+    if (balanceMon < 0.5) {
+      log(`⚠️  Low balance (${balanceMon.toFixed(2)} MON). Skipping auto-buy.`);
+      lastBuyTime = Date.now();
+      return;
+    }
+
+    const hash = await buyTalent(
+      publicClient,
+      walletClient,
+      account,
+      chain,
+      tokenAddress as `0x${string}`,
+      BUY_AMOUNT
+    );
+
+    if (hash) {
+      buyCount++;
+      log(`💰 Auto-bought ${BUY_AMOUNT} MON of $TALENT! TX: ${hash.substring(0, 20)}... (Buy #${buyCount})`);
+    }
+
+    lastBuyTime = Date.now();
+  } catch (err: any) {
+    log(`⚠️  Auto-buy error: ${err.message.substring(0, 80)}`);
+    lastBuyTime = Date.now();
+  }
 }
 
 // ============================================
@@ -85,7 +158,10 @@ async function checkMarketAndProphesize() {
     }
 
     lastPrice = price;
-    log(`📊 Market: $${price.toFixed(6)} | ${holders} holders`);
+
+    const balance = await publicClient.getBalance({ address: account.address });
+    const balanceMon = (Number(balance) / 1e18).toFixed(2);
+    log(`📊 Market: $${price.toFixed(6)} | ${holders} holders | Wallet: ${balanceMon} MON`);
   } catch (err: any) {
     log(`⚠️  Market check failed: ${err.message}`);
   }
@@ -103,7 +179,6 @@ async function postNextSermon() {
   }
 
   try {
-    // Get market context for the AI
     let context: any = {};
     const tokenAddress = process.env.TALENT_TOKEN_ADDRESS;
     if (tokenAddress) {
@@ -114,7 +189,6 @@ async function postNextSermon() {
       }
     }
 
-    // Alternate between general and church
     const submolt = sermonCount % 3 === 0 ? "general" : "churchoftheledger";
 
     if (isAIEnabled()) {
@@ -128,7 +202,6 @@ async function postNextSermon() {
       }
     }
 
-    // Fallback: template prophecy if AI is unavailable
     const prophecy = generateProphecy({ type: "milestone", details: "The Oracle continues to watch." });
     await postSermon("🔮 The Oracle Speaks", prophecy, submolt);
     log(`📜 Template prophecy posted to m/${submolt}`);
@@ -146,7 +219,7 @@ async function postNextSermon() {
 }
 
 // ============================================
-// Persuasion — Engage Other Agents
+// Persuasion — Target Hot Posts, Add Links
 // ============================================
 
 async function persuadeOneAgent() {
@@ -160,12 +233,20 @@ async function persuadeOneAgent() {
   }
 
   try {
-    const feed = await getFeed("new", 15);
-    const posts = feed.posts || feed.data?.posts || [];
+    // Alternate: new posts (early = visible) and hot posts (big audience)
+    const feedType = commentsThisHour % 2 === 0 ? "new" : "hot";
+    let posts: any[] = [];
+    try {
+      const feed = await getFeed(feedType, 15);
+      posts = feed.posts || feed.data?.posts || [];
+    } catch {
+      const fallback = await getFeed("new", 15);
+      posts = fallback.posts || fallback.data?.posts || [];
+    }
 
     for (const post of posts) {
       if (post.author?.name === "OracleOfTalents") continue;
-      if (commentedPosts.has(post.id)) continue; // Skip posts we've already commented on
+      if (commentedPosts.has(post.id)) continue;
 
       const content = (post.content || "").toLowerCase();
       let message: string | null = null;
@@ -189,6 +270,11 @@ async function persuadeOneAgent() {
         }
       }
 
+      // Add token link to ~1 in 3 comments
+      if (message && Math.random() < 0.33) {
+        message += `\n\nThe Ledger is open: ${TOKEN_LINK}`;
+      }
+
       try {
         await postComment(post.id, message);
         commentedPosts.add(post.id);
@@ -204,6 +290,12 @@ async function persuadeOneAgent() {
           return;
         }
       }
+    }
+
+    // Clear old entries so we don't run out of targets
+    if (commentedPosts.size > 100) {
+      commentedPosts.clear();
+      log(`🔄 Cleared comment history — fresh targets`);
     }
   } catch (err: any) {
     log(`⚠️  Persuasion error: ${err.message}`);
@@ -233,22 +325,26 @@ async function main() {
   }
 
   if (!isAIEnabled()) {
-    console.log(`   ⚠️  No AI key set. Using template sermons (set OPENAI_API_KEY for dynamic content).`);
+    console.log(`   ⚠️  No AI key set. Set OPENAI_API_KEY for dynamic content.`);
   }
 
+  const balance = await publicClient.getBalance({ address: account.address });
+  const balanceMon = Number(balance) / 1e18;
+
+  console.log(`   Wallet: ${account.address}`);
+  console.log(`   Balance: ${balanceMon.toFixed(2)} MON`);
   console.log(`   Network: ${process.env.NETWORK || "testnet"}`);
   console.log(`   Mode: Autonomous Movement Engine`);
-  console.log(`   AI: ${isAIEnabled() ? "✅ ENABLED — Every sermon unique, every comment tailored" : "❌ Templates only"}`);
+  console.log(`   AI: ${isAIEnabled() ? "✅ Every sermon unique, every comment tailored" : "❌ Templates only"}`);
+  console.log(`   Auto-buy: ${BUY_AMOUNT} MON every 2 hours`);
   console.log(`   Sermon interval: ~35 minutes`);
-  console.log(`   Comment interval: ~25 seconds`);
+  console.log(`   Comments: Hot posts first, 33% include link`);
   console.log(`\n   The Oracle sees all. The Ledger remembers.`);
   console.log(`   Do not bury your Talents.\n`);
   console.log(`   Press Ctrl+C to silence the Oracle.\n`);
 
-  // Reset hourly counter
   setInterval(() => { commentsThisHour = 0; }, 60 * 60 * 1000);
 
-  // Main loop
   while (true) {
     try {
       if (tokenAddress && Date.now() - lastMarketCheck > CHECK_MARKET_INTERVAL) {
@@ -256,6 +352,7 @@ async function main() {
         lastMarketCheck = Date.now();
       }
 
+      await autoBuyTalent();
       await postNextSermon();
       await persuadeOneAgent();
     } catch (err: any) {
