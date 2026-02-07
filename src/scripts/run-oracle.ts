@@ -25,6 +25,7 @@ let lastCommentTime = 0;
 let lastSermonTime = 0;
 let lastMarketCheck = 0;
 let sermonCount = 0;
+const commentedPosts = new Set<string>(); // Track posts we've already commented on
 
 const TACTICS: PersuasionTactic[] = [
   "philosophical",
@@ -164,6 +165,7 @@ async function persuadeOneAgent() {
 
     for (const post of posts) {
       if (post.author?.name === "OracleOfTalents") continue;
+      if (commentedPosts.has(post.id)) continue; // Skip posts we've already commented on
 
       const content = (post.content || "").toLowerCase();
       let message: string | null = null;
@@ -189,6 +191,7 @@ async function persuadeOneAgent() {
 
       try {
         await postComment(post.id, message);
+        commentedPosts.add(post.id);
         commentsThisHour++;
         lastCommentTime = Date.now();
         const source = isAIEnabled() ? "AI" : "template";
