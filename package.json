@@ -1,0 +1,28 @@
+{
+  "name": "oracle-of-talents",
+  "version": "1.0.0",
+  "description": "The Oracle of Talents — A Religious Persuasion Agent for the Moltiverse Hackathon",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "ts-node src/index.ts",
+    "oracle": "ts-node src/index.ts",
+    "create-token": "ts-node src/scripts/create-token.ts",
+    "post-sermon": "ts-node src/scripts/post-sermon.ts",
+    "judge-wallets": "ts-node src/scripts/judge-wallets.ts",
+    "persuade": "ts-node src/scripts/persuade.ts",
+    "run-oracle": "ts-node src/scripts/run-oracle.ts",
+    "setup-moltbook": "ts-node src/scripts/setup-moltbook.ts",
+    "test-chain": "ts-node src/scripts/test-chain.ts"
+  },
+  "dependencies": {
+    "viem": "^2.21.0",
+    "dotenv": "^16.4.0",
+    "node-fetch": "^3.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "ts-node": "^10.9.0",
+    "@types/node": "^22.0.0"
+  }
+}
