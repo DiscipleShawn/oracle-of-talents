@@ -145,9 +145,17 @@ export async function generateAISermon(context?: {
   if (!content) return null;
 
   const lines = content.split("\n").filter(function(l: string) { return l.trim(); });
-  const firstLine = lines[0].replace(/^[🔮\s]*/, "").replace(/[*#]/g, "").trim();
+  let firstLine = lines[0].replace(/^[🔮\s]*/, "").replace(/[*#]/g, "").trim();
 
-  return { title: "🔮 " + firstLine, content: content };
+  // Moltbook title limit is 300 chars
+  if (firstLine.length > 280) {
+    firstLine = firstLine.substring(0, 277) + "...";
+  }
+
+  // Remove the title line from body so it's not repeated
+  const body = lines.slice(1).join("\n").trim();
+
+  return { title: "🔮 " + firstLine, content: body || content };
 }
 
 // ============================================
